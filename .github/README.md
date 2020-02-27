@@ -1,8 +1,8 @@
 <p align="center">
   <a href="https://fiber.wiki">
-    <img alt="Fiber" height="100" src="https://github.com/gofiber/docs/blob/master/static/logo.svg">
+    <img alt="Fiber" height="125" src="https://github.com/gofiber/docs/blob/master/static/fiber_v2_logo.svg">
   </a>
-  <br><br>
+  <br>
   <!--<a href="https://github.com/gofiber/fiber/blob/master/.github/README.md">
     <img height="20px" src="https://cdnjs.cloudflare.com/ajax/libs/flag-icon-css/3.4.6/flags/4x3/gb.svg">
   </a>-->
@@ -39,6 +39,9 @@
   </a>
   <a href="https://fiber.wiki">
     <img src="https://img.shields.io/badge/api-documentation-blue?style=flat-square">
+  </a>
+  <a href="https://pkg.go.dev/github.com/gofiber/fiber?tab=doc">
+    <img src="https://img.shields.io/badge/go.dev-reference-007d9c?logo=go&logoColor=white&style=flat-square">
   </a>
   <a href="#">
     <img src="https://img.shields.io/badge/goreport-A%2B-brightgreen?style=flat-square">
@@ -106,7 +109,7 @@ These tests are performed by [TechEmpower](https://github.com/TechEmpower/Framew
 - [API endpoints](https://fiber.wiki/context)
 - Middleware & [Next](https://fiber.wiki/context#next) support
 - [Rapid](https://dev.to/koddr/welcome-to-fiber-an-express-js-styled-fastest-web-framework-written-with-on-golang-497) server-side programming
-- Available in [5 languages](https://fiber.wiki/)
+- Available in 9 other languages
 - And much more, [explore Fiber](https://fiber.wiki/)
 
 ## 💡 Philosophy
@@ -114,6 +117,8 @@ These tests are performed by [TechEmpower](https://github.com/TechEmpower/Framew
 New gophers that make the switch from [Node.js](https://nodejs.org/en/about/) to [Go](https://golang.org/doc/) are dealing with a learning curve before they can start building their web applications or microservices. Fiber, as a **web framework**, was created with the idea of **minimalism** and follow **UNIX way**, so that new gophers can quickly enter the world of Go with a warm and trusted welcome.
 
 Fiber is **inspired** by Express, the most popular web framework on the Internet. We combined the **ease** of Express and **raw performance** of Go. If you have ever implemented a web application on Node.js (_using Express or similar_), then many methods and principles will seem **very common** to you.
+
+We **listen** to our users in [issues](https://github.com/gofiber/fiber/issues) (_and all over the Internet_) to create a **fast**, **flexible** and **friendly** Go web framework for **any** tasks, **deadlines** and developer **skills**! Just like Express does in the JavaScript world.
 
 ## 👀 Examples
 
@@ -199,6 +204,65 @@ func main() {
 <details>
   <summary>📚 Show more code examples</summary>
 
+### Template engines
+
+Already supports:
+
+- [html](https://golang.org/pkg/html/template/)
+- [amber](https://github.com/eknkc/amber)
+- [handlebars](https://github.com/aymerick/raymond)
+- [mustache](https://github.com/cbroglie/mustache)
+- [pug](https://github.com/Joker/jade)
+
+```go
+func main() {
+  // You can setup template engine before initiation app:
+  app := fiber.New(&fiber.Settings{
+    TemplateEngine:    "mustache",
+    TemplateFolder:    "./views",
+    TemplateExtension: ".tmpl",
+  })
+
+  // OR after initiation app at any convenient location:
+  app.Settings.TemplateEngine = "mustache"
+  app.Settings.TemplateFolder = "./views"
+  app.Settings.TemplateExtension = ".tmpl"
+
+  // And now, you can call template `./views/home.tmpl` like this:
+  app.Get("/", func(c *fiber.Ctx) {
+    c.Render("home", fiber.Map{
+      "title": "Homepage",
+      "year":  1999,
+    })
+  })
+  
+  // ...
+}
+```
+
+### Grouping routes into chains
+
+```go
+func main() {
+  app := fiber.New()
+  
+  // Root API route
+  api := app.Group("/api", cors())  // /api
+  
+  // API v1 routes
+  v1 := api.Group("/v1", mysql())   // /api/v1
+  v1.Get("/list", handler)          // /api/v1/list
+  v1.Get("/user", handler)          // /api/v1/user
+  
+  // API v2 routes
+  v2 := api.Group("/v2", mongodb()) // /api/v2
+  v2.Get("/list", handler)          // /api/v2/list
+  v2.Get("/user", handler)          // /api/v2/user
+  
+  // ...
+}
+```
+
 ### Custom 404 response
 
 ```go
@@ -206,9 +270,11 @@ func main() {
   app := fiber.New()
 
   app.Static("/public")
+
   app.Get("/demo", func(c *fiber.Ctx) {
     c.Send("This is a demo!")
   })
+
   app.Post("/register", func(c *fiber.Ctx) {
     c.Send("Welcome!")
   })
@@ -243,8 +309,38 @@ func main() {
 }
 ```
 
+### WebSocket support
 
-### Recover from panic
+```go
+func main() {
+  app := fiber.New()
+
+  app.WebSocket("/ws/:name", func(c *fiber.Conn) {
+    log.Println(c.Params("name"))
+
+    for {
+      mt, msg, err := c.ReadMessage()
+      if err != nil {
+        log.Println("read:", err)
+        break
+      }
+
+      log.Printf("recovery: %s", msg)
+
+      err = c.WriteMessage(mt, msg)
+      if err != nil {
+        log.Println("write:", err)
+        break
+      }
+    }
+  })
+
+  // Listen on ws://localhost:3000/ws/john
+  app.Listen(3000)
+}
+```
+
+### Recover from `panic`
 
 ```go
 func main() {
@@ -266,7 +362,8 @@ func main() {
 
 ## 💬 Media
 
-- [Welcome to Fiber — an Express.js styled web framework written in Go with ❤️](https://dev.to/koddr/welcome-to-fiber-an-express-js-styled-fastest-web-framework-written-with-on-golang-497) _by [Vic Shóstak](https://github.com/koddr), 03 Feb 2020_
+- [Welcome to Fiber — an Express.js styled web framework written in Go with ❤️](https://dev.to/koddr/welcome-to-fiber-an-express-js-styled-fastest-web-framework-written-with-on-golang-497) (_by [Vic Shóstak](https://github.com/koddr), 03 Feb 2020_)
+- [Fiber release v1.7 is out now! 🎉 What's new and is he still fast, flexible and friendly?](https://dev.to/koddr/fiber-v2-is-out-now-what-s-new-and-is-he-still-fast-flexible-and-friendly-3ipf) (_by [Vic Shóstak](https://github.com/koddr), 21 Feb 2020_)
 
 ## 👍 Contribute
 
@@ -295,7 +392,7 @@ If you want to say **thank you** and/or support the active development of `Fiber
     <td align="center">
       <a href="https://github.com/koddr">
         <img src="https://avatars0.githubusercontent.com/u/11155743?s=460&v=4" width="100px"></br>
-        <sub><b>Vic Shóstak</b></sub>
+        <sub><b>Vic&nbsp;Shóstak</b></sub>
       </a>
     </td>
     <td align="center">
