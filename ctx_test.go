@@ -28,7 +28,6 @@ func Test_Accepts(t *testing.T) {
 		}
 		expect = ".xml"
 		result = c.Accepts(expect)
-		t.Log(result)
 		if result != expect {
 			t.Fatalf(`Expecting %s, got %s`, expect, result)
 		}
@@ -157,11 +156,11 @@ func Test_Body(t *testing.T) {
 func Test_BodyParser(t *testing.T) {
 	app := New()
 	type Demo struct {
-		Name string `json:"name"`
+		Name string `json:"name" xml:"name" form:"name" query:"name"`
 	}
 	app.Post("/test", func(c *Ctx) {
 		d := new(Demo)
-		err := c.BodyParser(&d)
+		err := c.BodyParser(d)
 		if err != nil {
 			t.Fatalf(`%s: BodyParser %v`, t.Name(), err)
 		}
@@ -177,6 +176,26 @@ func Test_BodyParser(t *testing.T) {
 	if err != nil {
 		t.Fatalf(`%s: %s`, t.Name(), err)
 	}
+
+	// data := url.Values{}
+	// data.Set("name", "john")
+	// req = httptest.NewRequest("POST", "/test", strings.NewReader(data.Encode()))
+	// req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+	// req.Header.Add("Content-Length", strconv.Itoa(len(data.Encode())))
+
+	// _, err = app.Test(req)
+	// if err != nil {
+	// 	t.Fatalf(`%s: %s`, t.Name(), err)
+	// }
+
+	// req = httptest.NewRequest("POST", "/test", bytes.NewBuffer([]byte(`<name>john</name>`)))
+	// req.Header.Set("Content-Type", "application/xml")
+	// req.Header.Set("Content-Length", strconv.Itoa(len([]byte(`<name>john</name>`))))
+
+	// _, err = app.Test(req)
+	// if err != nil {
+	// 	t.Fatalf(`%s: %s`, t.Name(), err)
+	// }
 }
 func Test_Cookies(t *testing.T) {
 	app := New()
@@ -543,9 +562,26 @@ func Test_Query(t *testing.T) {
 func Test_Range(t *testing.T) {
 	app := New()
 	app.Get("/test", func(c *Ctx) {
-		c.Range()
+		result, err := c.Range(1000)
+		if err != nil {
+			t.Fatalf(`%s: %s`, t.Name(), err)
+			return
+		}
+		expect := "bytes"
+		if result.Type != expect {
+			t.Fatalf(`%s: Expecting %s, got %s`, t.Name(), expect, result.Type)
+		}
+		expectNum := 500
+		if result.Ranges[0].Start != expectNum {
+			t.Fatalf(`%s: Expecting %v, got %v`, t.Name(), expectNum, result.Ranges[0].Start)
+		}
+		expectNum = 700
+		if result.Ranges[0].End != expectNum {
+			t.Fatalf(`%s: Expecting %v, got %v`, t.Name(), expectNum, result.Ranges[0].End)
+		}
 	})
 	req, _ := http.NewRequest("GET", "/test", nil)
+	req.Header.Set("range", "bytes=500-700")
 	_, err := app.Test(req)
 	if err != nil {
 		t.Fatalf(`%s: %s`, t.Name(), err)

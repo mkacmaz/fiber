@@ -6,9 +6,8 @@ package fiber
 
 import (
 	"bufio"
-	"flag"
+	"crypto/tls"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
@@ -24,115 +23,86 @@ import (
 	fasthttp "github.com/valyala/fasthttp"
 )
 
-// Version of Fiber
-const Version = "1.8.0"
+// Version of current package
+const Version = "1.9.0"
 
-type (
-	// App denotes the Fiber application.
-	App struct {
-		server   *fasthttp.Server
-		routes   []*Route
-		child    bool
-		recover  func(*Ctx)
-		Settings *Settings
-	}
-	// Map defines a generic map of type `map[string]interface{}`.
-	Map map[string]interface{}
-	// Settings is a struct holding the server settings
-	Settings struct {
-		// fiber settings
-		Prefork bool `default:"false"`
-		// Enable strict routing. When enabled, the router treats "/foo" and "/foo/" as different. Otherwise, the router treats "/foo" and "/foo/" as the same.
-		StrictRouting bool `default:"false"`
-		// Enable case sensitivity. When enabled, "/Foo" and "/foo" are different routes. When disabled, "/Foo" and "/foo" are treated the same.
-		CaseSensitive bool `default:"false"`
-		// Enables the "Server: value" HTTP header.
-		ServerHeader string `default:""`
-		// Enables handler values to be immutable even if you return from handler
-		Immutable bool `default:"false"`
-		// fasthttp settings
-		GETOnly              bool          `default:"false"`
-		IdleTimeout          time.Duration `default:"0"`
-		Concurrency          int           `default:"256 * 1024"`
-		ReadTimeout          time.Duration `default:"0"`
-		WriteTimeout         time.Duration `default:"0"`
-		TCPKeepalive         bool          `default:"false"`
-		MaxConnsPerIP        int           `default:"0"`
-		ReadBufferSize       int           `default:"4096"`
-		WriteBufferSize      int           `default:"4096"`
-		ConcurrencySleep     time.Duration `default:"0"`
-		DisableKeepAlive     bool          `default:"false"`
-		ReduceMemoryUsage    bool          `default:"false"`
-		MaxRequestsPerConn   int           `default:"0"`
-		TCPKeepalivePeriod   time.Duration `default:"0"`
-		MaxRequestBodySize   int           `default:"4 * 1024 * 1024"`
-		NoHeaderNormalizing  bool          `default:"false"`
-		NoDefaultContentType bool          `default:"false"`
-		// template settings
-		TemplateFolder    string `default:""`
-		TemplateEngine    string `default:""`
-		TemplateExtension string `default:""`
-	}
-)
+// Map is a shortcut for map[string]interface{}
+type Map map[string]interface{}
 
-func init() {
-	flag.Bool("prefork", false, "Use prefork")
-	flag.Bool("child", false, "Is a child process")
+// App denotes the Fiber application.
+type App struct {
+	server   *fasthttp.Server // FastHTTP server
+	routes   []*Route         // Route stack
+	Settings *Settings        // Fiber settings
 }
 
-// New : https://fiber.wiki/application#new
-func New(settings ...*Settings) (app *App) {
-	var prefork bool
-	var child bool
-	for _, arg := range os.Args[1:] {
-		if arg == "-prefork" {
-			prefork = true
-		} else if arg == "-child" {
-			child = true
-		}
-	}
-	app = &App{
-		child: child,
-	}
+// Settings holds is a struct holding the server settings
+type Settings struct {
+	// This will spawn multiple Go processes listening on the same port
+	Prefork bool // default: false
+	// Enable strict routing. When enabled, the router treats "/foo" and "/foo/" as different.
+	StrictRouting bool // default: false
+	// Enable case sensitivity. When enabled, "/Foo" and "/foo" are different routes.
+	CaseSensitive bool // default: false
+	// Enables the "Server: value" HTTP header.
+	ServerHeader string // default: ""
+	// Enables handler values to be immutable even if you return from handler
+	Immutable bool // default: false
+	// Max body size that the server accepts
+	BodyLimit int // default: 4 * 1024 * 1024
+	// Folder containing template files
+	TemplateFolder string // default: ""
+	// Template engine: html, amber, handlebars , mustache or pug
+	TemplateEngine func(raw string, bind interface{}) (string, error) // default: nil
+	// Extension for the template files
+	TemplateExtension string // default: ""
+	// The amount of time allowed to read the full request including body.
+	ReadTimeout time.Duration // default: unlimited
+	// The maximum duration before timing out writes of the response.
+	WriteTimeout time.Duration // default: unlimited
+	// The maximum amount of time to wait for the next request when keep-alive is enabled.
+	IdleTimeout time.Duration // default: unlimited
+}
+
+// Group struct
+type Group struct {
+	prefix string
+	app    *App
+}
+
+// New creates a new Fiber named instance.
+// You can pass optional settings when creating a new instance.
+func New(settings ...*Settings) *App {
+	schemaDecoderForm.SetAliasTag("form")
+	schemaDecoderQuery.SetAliasTag("query")
+	// Create app
+	app := new(App)
+	// Create settings
+	app.Settings = new(Settings)
+	// Set default settings
+	app.Settings.Prefork = isPrefork()
+	app.Settings.BodyLimit = 4 * 1024 * 1024
+	// If settings exist, set defaults
 	if len(settings) > 0 {
-		opt := settings[0]
-		if !opt.Prefork {
-			opt.Prefork = prefork
+		app.Settings = settings[0] // Set custom settings
+		if !app.Settings.Prefork { // Default to -prefork flag if false
+			app.Settings.Prefork = isPrefork()
 		}
-		if opt.Immutable {
-			getString = func(b []byte) string {
-				return string(b)
-			}
+		if app.Settings.BodyLimit == 0 { // Default MaxRequestBodySize
+			app.Settings.BodyLimit = 4 * 1024 * 1024
 		}
-		if opt.Concurrency == 0 {
-			opt.Concurrency = 256 * 1024
+		if app.Settings.Immutable { // Replace unsafe conversion funcs
+			getString = getStringImmutable
+			getBytes = getBytesImmutable
 		}
-		if opt.ReadBufferSize == 0 {
-			opt.ReadBufferSize = 4096
-		}
-		if opt.WriteBufferSize == 0 {
-			opt.WriteBufferSize = 4096
-		}
-		if opt.MaxRequestBodySize == 0 {
-			opt.MaxRequestBodySize = 4 * 1024 * 1024
-		}
-		app.Settings = opt
-		return
 	}
-	app.Settings = &Settings{
-		Prefork:            prefork,
-		Concurrency:        256 * 1024,
-		ReadBufferSize:     4096,
-		WriteBufferSize:    4096,
-		MaxRequestBodySize: 4 * 1024 * 1024,
-	}
-	return
+	return app
 }
 
-// Group : https://fiber.wiki/application#group
+// Group is used for Routes with common prefix to define a new sub-router with optional middleware.
 func (app *App) Group(prefix string, handlers ...func(*Ctx)) *Group {
 	if len(handlers) > 0 {
-		app.registerMethod("USE", prefix, "", handlers...)
+		app.registerMethod("USE", prefix, handlers...)
 	}
 	return &Group{
 		prefix: prefix,
@@ -140,13 +110,34 @@ func (app *App) Group(prefix string, handlers ...func(*Ctx)) *Group {
 	}
 }
 
-// Static : https://fiber.wiki/application#static
-func (app *App) Static(args ...string) *App {
-	app.registerStatic("/", args...)
+// Static struct
+type Static struct {
+	// Transparently compresses responses if set to true
+	// This works differently than the github.com/gofiber/compression middleware
+	// The server tries minimizing CPU usage by caching compressed files.
+	// It adds ".fiber.gz" suffix to the original file name.
+	// Optional. Default value false
+	Compress bool
+	// Enables byte range requests if set to true.
+	// Optional. Default value false
+	ByteRange bool
+	// Enable directory browsing.
+	// Optional. Default value false.
+	Browse bool
+	// Index file for serving a directory.
+	// Optional. Default value "index.html".
+	Index string
+}
+
+// Static registers a new route with path prefix to serve static files from the provided root directory.
+func (app *App) Static(prefix, root string, config ...Static) *App {
+	app.registerStatic(prefix, root, config...)
 	return app
 }
 
-// Use : https://fiber.wiki/application#http-methods
+// Use registers a middleware route.
+// Middleware matches requests beginning with the provided prefix.
+// Providing a prefix is optional, it defaults to "/"
 func (app *App) Use(args ...interface{}) *App {
 	var path = ""
 	var handlers []func(*Ctx)
@@ -160,83 +151,191 @@ func (app *App) Use(args ...interface{}) *App {
 			log.Fatalf("Invalid handler: %v", reflect.TypeOf(arg))
 		}
 	}
-	app.registerMethod("USE", "", path, handlers...)
+	app.registerMethod("USE", path, handlers...)
 	return app
 }
 
 // Connect : https://fiber.wiki/application#http-methods
 func (app *App) Connect(path string, handlers ...func(*Ctx)) *App {
-	app.registerMethod(http.MethodConnect, "", path, handlers...)
+	app.registerMethod(MethodConnect, path, handlers...)
 	return app
 }
 
 // Put : https://fiber.wiki/application#http-methods
 func (app *App) Put(path string, handlers ...func(*Ctx)) *App {
-	app.registerMethod(http.MethodPut, "", path, handlers...)
+	app.registerMethod(MethodPut, path, handlers...)
 	return app
 }
 
 // Post : https://fiber.wiki/application#http-methods
 func (app *App) Post(path string, handlers ...func(*Ctx)) *App {
-	app.registerMethod(http.MethodPost, "", path, handlers...)
+	app.registerMethod(MethodPost, path, handlers...)
 	return app
 }
 
 // Delete : https://fiber.wiki/application#http-methods
 func (app *App) Delete(path string, handlers ...func(*Ctx)) *App {
-	app.registerMethod(http.MethodDelete, "", path, handlers...)
+	app.registerMethod(MethodDelete, path, handlers...)
 	return app
 }
 
 // Head : https://fiber.wiki/application#http-methods
 func (app *App) Head(path string, handlers ...func(*Ctx)) *App {
-	app.registerMethod(http.MethodHead, "", path, handlers...)
+	app.registerMethod(MethodHead, path, handlers...)
 	return app
 }
 
 // Patch : https://fiber.wiki/application#http-methods
 func (app *App) Patch(path string, handlers ...func(*Ctx)) *App {
-	app.registerMethod(http.MethodPatch, "", path, handlers...)
+	app.registerMethod(MethodPatch, path, handlers...)
 	return app
 }
 
 // Options : https://fiber.wiki/application#http-methods
 func (app *App) Options(path string, handlers ...func(*Ctx)) *App {
-	app.registerMethod(http.MethodOptions, "", path, handlers...)
+	app.registerMethod(MethodOptions, path, handlers...)
 	return app
 }
 
 // Trace : https://fiber.wiki/application#http-methods
 func (app *App) Trace(path string, handlers ...func(*Ctx)) *App {
-	app.registerMethod(http.MethodTrace, "", path, handlers...)
+	app.registerMethod(MethodTrace, path, handlers...)
 	return app
 }
 
 // Get : https://fiber.wiki/application#http-methods
 func (app *App) Get(path string, handlers ...func(*Ctx)) *App {
-	app.registerMethod(http.MethodGet, "", path, handlers...)
+	app.registerMethod(MethodGet, path, handlers...)
 	return app
 }
 
-// All : https://fiber.wiki/application#http-methods
+// All matches all HTTP methods and complete paths
 func (app *App) All(path string, handlers ...func(*Ctx)) *App {
-	app.registerMethod("ALL", "", path, handlers...)
+	app.registerMethod("ALL", path, handlers...)
 	return app
 }
 
-// WebSocket : https://fiber.wiki/application#websocket
-func (app *App) WebSocket(path string, handler func(*Conn)) *App {
-	app.registerWebSocket(http.MethodGet, "", path, handler)
-	return app
+// Group is used for Routes with common prefix to define a new sub-router with optional middleware.
+func (grp *Group) Group(prefix string, handlers ...func(*Ctx)) *Group {
+	prefix = groupPaths(grp.prefix, prefix)
+	if len(handlers) > 0 {
+		grp.app.registerMethod("USE", prefix, handlers...)
+	}
+	return &Group{
+		prefix: prefix,
+		app:    grp.app,
+	}
 }
 
-// Recover : https://fiber.wiki/application#recover
-func (app *App) Recover(handler func(*Ctx)) {
-	app.recover = handler
+// Static : https://fiber.wiki/application#static
+func (grp *Group) Static(prefix, root string, config ...Static) *Group {
+	prefix = groupPaths(grp.prefix, prefix)
+	grp.app.registerStatic(prefix, root, config...)
+	return grp
 }
 
-// Listen : https://fiber.wiki/application#listen
-func (app *App) Listen(address interface{}, tls ...string) error {
+// Use registers a middleware route.
+// Middleware matches requests beginning with the provided prefix.
+// Providing a prefix is optional, it defaults to "/"
+func (grp *Group) Use(args ...interface{}) *Group {
+	var path = ""
+	var handlers []func(*Ctx)
+	for i := 0; i < len(args); i++ {
+		switch arg := args[i].(type) {
+		case string:
+			path = arg
+		case func(*Ctx):
+			handlers = append(handlers, arg)
+		default:
+			log.Fatalf("Invalid Use() arguments, must be (prefix, handler) or (handler)")
+		}
+	}
+	grp.app.registerMethod("USE", groupPaths(grp.prefix, path), handlers...)
+	return grp
+}
+
+// Connect : https://fiber.wiki/application#http-methods
+func (grp *Group) Connect(path string, handlers ...func(*Ctx)) *Group {
+	grp.app.registerMethod(MethodConnect, groupPaths(grp.prefix, path), handlers...)
+	return grp
+}
+
+// Put : https://fiber.wiki/application#http-methods
+func (grp *Group) Put(path string, handlers ...func(*Ctx)) *Group {
+	grp.app.registerMethod(MethodPut, groupPaths(grp.prefix, path), handlers...)
+	return grp
+}
+
+// Post : https://fiber.wiki/application#http-methods
+func (grp *Group) Post(path string, handlers ...func(*Ctx)) *Group {
+	grp.app.registerMethod(MethodPost, groupPaths(grp.prefix, path), handlers...)
+	return grp
+}
+
+// Delete : https://fiber.wiki/application#http-methods
+func (grp *Group) Delete(path string, handlers ...func(*Ctx)) *Group {
+	grp.app.registerMethod(MethodDelete, groupPaths(grp.prefix, path), handlers...)
+	return grp
+}
+
+// Head : https://fiber.wiki/application#http-methods
+func (grp *Group) Head(path string, handlers ...func(*Ctx)) *Group {
+	grp.app.registerMethod(MethodHead, groupPaths(grp.prefix, path), handlers...)
+	return grp
+}
+
+// Patch : https://fiber.wiki/application#http-methods
+func (grp *Group) Patch(path string, handlers ...func(*Ctx)) *Group {
+	grp.app.registerMethod(MethodPatch, groupPaths(grp.prefix, path), handlers...)
+	return grp
+}
+
+// Options : https://fiber.wiki/application#http-methods
+func (grp *Group) Options(path string, handlers ...func(*Ctx)) *Group {
+	grp.app.registerMethod(MethodOptions, groupPaths(grp.prefix, path), handlers...)
+	return grp
+}
+
+// Trace : https://fiber.wiki/application#http-methods
+func (grp *Group) Trace(path string, handlers ...func(*Ctx)) *Group {
+	grp.app.registerMethod(MethodTrace, groupPaths(grp.prefix, path), handlers...)
+	return grp
+}
+
+// Get : https://fiber.wiki/application#http-methods
+func (grp *Group) Get(path string, handlers ...func(*Ctx)) *Group {
+	grp.app.registerMethod(MethodGet, groupPaths(grp.prefix, path), handlers...)
+	return grp
+}
+
+// All matches all HTTP methods and complete paths
+func (grp *Group) All(path string, handlers ...func(*Ctx)) *Group {
+	grp.app.registerMethod("ALL", groupPaths(grp.prefix, path), handlers...)
+	return grp
+}
+
+// Serve can be used to pass a custom listener
+// This method does not support the Prefork feature
+// You can pass an optional *tls.Config to enable TLS.
+func (app *App) Serve(ln net.Listener, tlsconfig ...*tls.Config) error {
+	// Create fasthttp server
+	app.server = app.newServer()
+	// TLS config
+	if len(tlsconfig) > 0 {
+		ln = tls.NewListener(ln, tlsconfig[0])
+	}
+	// Preforkin is not available using app.Serve(ln net.Listener)
+	if app.Settings.Prefork {
+		fmt.Println("Preforking is not available with 'Serve' please use 'Listen' to enable it.")
+	}
+	// Print listening message
+	fmt.Printf("Fiber v%s listening on %s\n", Version, ln.Addr().String())
+	return app.server.Serve(ln)
+}
+
+// Listen serves HTTP requests from the given addr or port.
+// You can pass an optional *tls.Config to enable TLS.
+func (app *App) Listen(address interface{}, tlsconfig ...*tls.Config) error {
 	addr, ok := address.(string)
 	if !ok {
 		port, ok := address.(int)
@@ -250,14 +349,11 @@ func (app *App) Listen(address interface{}, tls ...string) error {
 	}
 	// Create fasthttp server
 	app.server = app.newServer()
-	// Print listening message
-	if !app.child {
-		fmt.Printf("Fiber v%s listening on %s\n", Version, addr)
-	}
+
 	var ln net.Listener
 	var err error
 	// Prefork enabled
-	if app.Settings.Prefork && runtime.NumCPU() > 1 {
+	if app.Settings.Prefork && runtime.NumCPU() > 1 && runtime.GOOS != "windows" {
 		if ln, err = app.prefork(addr); err != nil {
 			return err
 		}
@@ -266,16 +362,24 @@ func (app *App) Listen(address interface{}, tls ...string) error {
 			return err
 		}
 	}
-
-	// enable TLS/HTTPS
-	if len(tls) > 1 {
-		return app.server.ServeTLS(ln, tls[0], tls[1])
+	// TLS config
+	if len(tlsconfig) > 0 {
+		ln = tls.NewListener(ln, tlsconfig[0])
+	}
+	// Print listening message
+	if !isChild() {
+		fmt.Printf("Fiber v%s listening on %s\n", Version, addr)
 	}
 	return app.server.Serve(ln)
 }
 
-// Shutdown : TODO: Docs
-// Shutsdown the server gracefully
+// Shutdown gracefully shuts down the server without interrupting any active connections.
+// Shutdown works by first closing all open listeners and then waiting indefinitely for all connections to return to idle and then shut down.
+//
+// When Shutdown is called, Serve, ListenAndServe, and ListenAndServeTLS immediately return nil.
+// Make sure the program doesn't exit and waits instead for Shutdown to return.
+//
+// Shutdown does not close keepalive connections so its recommended to set ReadTimeout to something else than 0.
 func (app *App) Shutdown() error {
 	if app.server == nil {
 		return fmt.Errorf("Server is not running")
@@ -283,20 +387,27 @@ func (app *App) Shutdown() error {
 	return app.server.Shutdown()
 }
 
-// Test : https://fiber.wiki/application#test
-func (app *App) Test(request *http.Request) (*http.Response, error) {
-	// Get raw http request
-	reqRaw, err := httputil.DumpRequest(request, true)
+// Test is used for internal debugging by passing a *http.Request
+// Timeout is optional and defaults to 200ms, -1 will disable it completely.
+func (app *App) Test(request *http.Request, msTimeout ...int) (*http.Response, error) {
+	timeout := 200
+	if len(msTimeout) > 0 {
+		timeout = msTimeout[0]
+	}
+	if timeout < 0 {
+		timeout = 60000 // 1 minute
+	}
+	// Dump raw http request
+	dump, err := httputil.DumpRequest(request, true)
 	if err != nil {
 		return nil, err
 	}
-	// Setup a fiber server struct
+	// Setup server
 	app.server = app.newServer()
-	// Create fake connection
-	conn := &testConn{}
-	// Pass HTTP request to conn
-	_, err = conn.r.Write(reqRaw)
-	if err != nil {
+	// Create conn
+	conn := new(testConn)
+	// Write raw http request
+	if _, err = conn.r.Write(dump); err != nil {
 		return nil, err
 	}
 	// Serve conn to server
@@ -310,19 +421,12 @@ func (app *App) Test(request *http.Request) (*http.Response, error) {
 		if err != nil {
 			return nil, err
 		}
-		// Throw timeout error after 200ms
-	case <-time.After(200 * time.Millisecond):
-		return nil, fmt.Errorf("timeout")
+	case <-time.After(time.Duration(timeout) * time.Millisecond):
+		return nil, fmt.Errorf("Timeout error")
 	}
-	// Get raw HTTP response
-	respRaw, err := ioutil.ReadAll(&conn.w)
-	if err != nil {
-		return nil, err
-	}
-	// Create buffer
-	reader := strings.NewReader(getString(respRaw))
-	buffer := bufio.NewReader(reader)
-	// Convert raw HTTP response to http.Response
+	// Read response
+	buffer := bufio.NewReader(&conn.w)
+	// Convert raw http response to *http.Response
 	resp, err := http.ReadResponse(buffer, request)
 	if err != nil {
 		return nil, err
@@ -331,15 +435,15 @@ func (app *App) Test(request *http.Request) (*http.Response, error) {
 	return resp, nil
 }
 
-// https://www.nginx.com/blog/socket-sharding-nginx-release-1-9-1/
+// Sharding: https://www.nginx.com/blog/socket-sharding-nginx-release-1-9-1/
 func (app *App) prefork(address string) (ln net.Listener, err error) {
 	// Master proc
-	if !app.child {
-		addr, err := net.ResolveTCPAddr("tcp4", address)
+	if !isChild() {
+		addr, err := net.ResolveTCPAddr("tcp", address)
 		if err != nil {
 			return ln, err
 		}
-		tcplistener, err := net.ListenTCP("tcp4", addr)
+		tcplistener, err := net.ListenTCP("tcp", addr)
 		if err != nil {
 			return ln, err
 		}
@@ -367,37 +471,38 @@ func (app *App) prefork(address string) (ln net.Listener, err error) {
 		}
 		os.Exit(0)
 	} else {
+		// 1 core per child
 		runtime.GOMAXPROCS(1)
 		ln, err = net.FileListener(os.NewFile(3, ""))
 	}
 	return ln, err
 }
 
+type disableLogger struct{}
+
+func (dl *disableLogger) Printf(format string, args ...interface{}) {
+	// fmt.Println(fmt.Sprintf(format, args...))
+}
+
 func (app *App) newServer() *fasthttp.Server {
 	return &fasthttp.Server{
-		Handler: app.handler,
+		Handler:               app.handler,
+		Name:                  app.Settings.ServerHeader,
+		MaxRequestBodySize:    app.Settings.BodyLimit,
+		NoDefaultServerHeader: app.Settings.ServerHeader == "",
+		ReadTimeout:           app.Settings.ReadTimeout,
+		WriteTimeout:          app.Settings.WriteTimeout,
+		IdleTimeout:           app.Settings.IdleTimeout,
+		Logger:                &disableLogger{},
+		LogAllErrors:          false,
 		ErrorHandler: func(ctx *fasthttp.RequestCtx, err error) {
-			ctx.Response.SetStatusCode(400)
-			ctx.Response.SetBodyString("Bad Request")
+			if err.Error() == "body size exceeds the given limit" {
+				ctx.Response.SetStatusCode(413)
+				ctx.Response.SetBodyString("Request Entity Too Large")
+			} else {
+				ctx.Response.SetStatusCode(400)
+				ctx.Response.SetBodyString("Bad Request")
+			}
 		},
-		Name:                               app.Settings.ServerHeader,
-		Concurrency:                        app.Settings.Concurrency,
-		SleepWhenConcurrencyLimitsExceeded: app.Settings.ConcurrencySleep,
-		DisableKeepalive:                   app.Settings.DisableKeepAlive,
-		ReadBufferSize:                     app.Settings.ReadBufferSize,
-		WriteBufferSize:                    app.Settings.WriteBufferSize,
-		ReadTimeout:                        app.Settings.ReadTimeout,
-		WriteTimeout:                       app.Settings.WriteTimeout,
-		IdleTimeout:                        app.Settings.IdleTimeout,
-		MaxConnsPerIP:                      app.Settings.MaxConnsPerIP,
-		MaxRequestsPerConn:                 app.Settings.MaxRequestsPerConn,
-		TCPKeepalive:                       app.Settings.TCPKeepalive,
-		TCPKeepalivePeriod:                 app.Settings.TCPKeepalivePeriod,
-		MaxRequestBodySize:                 app.Settings.MaxRequestBodySize,
-		ReduceMemoryUsage:                  app.Settings.ReduceMemoryUsage,
-		GetOnly:                            app.Settings.GETOnly,
-		DisableHeaderNamesNormalizing:      app.Settings.NoHeaderNormalizing,
-		NoDefaultServerHeader:              app.Settings.ServerHeader == "",
-		NoDefaultContentType:               app.Settings.NoDefaultContentType,
 	}
 }
